@@ -1,11 +1,12 @@
-import React, { createContext, useReducer, useContext } from 'react';
+import React, { createContext, useReducer, useContext, useEffect } from 'react';
 import { groupsData } from '../data/groups';
 
 const TournamentContext = createContext();
 
 const initialState = {
     currentTab: 'groups', 
-    groups: groupsData,
+    groups: groupsData, 
+    loading: true       
 };
 
 function tournamentReducer(state, action) {
@@ -16,46 +17,48 @@ function tournamentReducer(state, action) {
                 currentTab: action.payload,
             };
 
-        case 'UPDATE_SCORE': {
-            // 1. Extract raw updates out of the payload packet
-            const { groupName, teamID, goalsFor, goalsAgainst, pointsWon } = action.payload;
+        case 'SET_LIVE_DATA': 
+            return {
+                ...state,
+                groups: action.payload,
+                loading: false 
+            };
 
-            // 2. Target the specific .teams array deep inside that group object wrapper safely
+        case 'UPDATE_SCORE': {
+            const { groupName, teamID, goalsFor, goalsAgainst, pointsWon } = action.payload;
             const targetTeams = state.groups[groupName]?.teams || [];
 
-            // 3. Map to build a brand new updated array list
             const updatedTeamsList = targetTeams.map(team => {
                 if (team.id === teamID) {
                     return {
                         ...team,
                         played: team.played + 1,
                         goalsFor: team.goalsFor + goalsFor,
-                        goalsAgainst: team.goalsAgainst + goalsAgainst, // 🟢 Fixed spelling typo!
+                        goalsAgainst: team.goalsAgainst + goalsAgainst,
                         points: team.points + pointsWon,
                     };
                 }
                 return team;
             });
 
-            // 4. Create a fresh array copy BEFORE sorting to protect data immutability rules
             const sortedTeamsList = [...updatedTeamsList].sort((a, b) => {
+
                 if (b.points !== a.points) {
-                    return b.points - a.points; // Higher points rank first
+                    return b.points - a.points;
                 }
-                // Tiebreaker: Goal Difference calculations (Goals For minus Goals Against)
+
                 const diffB = b.goalsFor - b.goalsAgainst;
                 const diffA = a.goalsFor - a.goalsAgainst;
                 return diffB - diffA;
             });
 
-            // 5. Package everything back up cleanly into the global state warehouse shell
             return {
                 ...state,
                 groups: {
                     ...state.groups,
                     [groupName]: {
                         ...state.groups[groupName],
-                        teams: sortedTeamsList // Put sorted rows back where they belong
+                        teams: sortedTeamsList
                     }
                 }
             };
@@ -66,8 +69,53 @@ function tournamentReducer(state, action) {
     }
 }
 
-export function TournamentProvider({ children }) {
+export function TournamentProvider({ children }){
+
     const [state, dispatch] = useReducer(tournamentReducer, initialState);
+
+    useEffect(() =>{
+        async function fetchWorldCupData(){
+
+            const API_URL = 'https://api.football-data.org/v4/competitions/WC/standings';
+            
+            const API_KEY = '880981a01e124d33ab7ba1378d01bd8d'; 
+
+            try {
+                const response = await fetch( API_URL,  {
+
+                    headers: { 'X-Auth-Token': API_KEY }
+                });
+
+                if (!response.ok) throw new Error(`HTTP Error! Status: ${response.status}`);
+
+                const rawData = await response.json();
+                
+                const formattedGroups = {};
+                
+                rawData.standings.forEach(groupBlock => {
+                    const cleanName = groupBlock.group.replace('_', ''); 
+                    
+                    formattedGroups[cleanName] = {
+                        teams: groupBlock.table.map(row => ({
+                            id: row.team.id,
+                            name: row.team.name,
+                            played: row.played,
+                            goalDifference: row.goalDifference,
+                            points: row.points
+                        }))
+                    };
+                });
+
+                dispatch({ type: 'SET_LIVE_DATA', payload: formattedGroups });
+
+            } catch (error) {
+                console.error(error);
+                dispatch({ type: 'SET_LIVE_DATA', payload: groupsData });
+            }
+        }
+
+        fetchWorldCupData();
+    }, []); 
 
     return (
         <TournamentContext.Provider value={{ state, dispatch }}> 
